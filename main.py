@@ -31,7 +31,7 @@ PICS_FOLDER = "photos"
 
 # AI Configuration
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = "gemini-1.5-flash" 
+MODEL_ID = "gemini-2.5-flash" 
 
 # ==============================================================================
 # 🛠️ LOGGING & 24/7 HEARTBEAT
@@ -297,3 +297,4 @@ if __name__ == "__main__":
     
     print("✅ Bot is Live!")
     app.run_polling()
+
