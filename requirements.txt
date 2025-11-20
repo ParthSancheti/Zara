@@ -6,3 +6,4 @@ aiosqlite
 Pillow
 flask
 gunicorn
+httpx
