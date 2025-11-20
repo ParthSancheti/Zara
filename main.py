@@ -13,11 +13,10 @@ import aiosqlite
 import edge_tts
 import feedparser
 import PIL.Image
-import httpx  # NEW: For reading links
+import httpx
 from google import genai
 from telegram import Update, constants
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-
 # ==============================================================================
 # 🔐 CONFIGURATION
 # ==============================================================================
@@ -31,7 +30,6 @@ PICS_FOLDER = "photos"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_ID = "gemini-2.5-flash" 
-
 # ==============================================================================
 # 🛠️ LOGGING & HEARTBEAT
 # ==============================================================================
@@ -43,7 +41,7 @@ keep_alive_app = Flask(__name__)
 
 @keep_alive_app.route('/')
 def home():
-    return "💅 Zara is Online & Reading Links."
+    return "💅 Zara is Online & Fixed."
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -97,7 +95,7 @@ class DatabaseManager:
 db = DatabaseManager()
 
 # ==============================================================================
-# 🧠 THE BRAIN
+# 🧠 THE BRAIN (South Delhi Vibe)
 # ==============================================================================
 async def generate_reply(user_id, user_input, user_profile, media_file_path=None, media_type=None):
     mood = user_profile['mood']
@@ -147,14 +145,18 @@ async def generate_reply(user_id, user_input, user_profile, media_file_path=None
 
 async def send_voice(update: Update, text: str):
     try:
-        # 1. Clean Text STRICTLY to avoid TTS Errors
-        clean_text = re.sub(r'\[.*?\]', '', text) # Remove [Tags]
-        clean_text = re.sub(r'[^\w\s,.]', '', clean_text) # Remove emojis/symbols
-        clean_text = clean_text.strip()
+        # --- THE FIX ---
+        # 1. Remove tags
+        text_without_tags = re.sub(r'\[.*?\]', '', text)
+        
+        # 2. Remove special chars (keep standard punctuation and letters)
+        # This regex keeps letters (English & Hindi), numbers, spaces, and basic punctuation
+        clean_text = re.sub(r'[^\w\s,.]', '', text_without_tags).strip()
 
-        # 2. Safety Check: If text is empty, DO NOT send voice
-        if not clean_text or len(clean_text) < 2: 
-            logger.warning("TTS Skipped: Text too short.")
+        # 3. SAFETY CHECK: If the text is too short or empty, STOP.
+        # This prevents the "No audio was received" error.
+        if not clean_text or len(clean_text) < 3:
+            logger.warning("⚠️ TTS Skipped: Text empty or too short.")
             return 
 
         filename = f"voice_{update.effective_user.id}_{int(time.time())}.mp3"
@@ -183,12 +185,11 @@ async def send_smart_pic(update: Update):
             await update.message.reply_photo(photo=p)
 
 # ==============================================================================
-# 🕵️ LINK READER & DRAFTER (The New Feature)
+# 🕵️ LINK READER & DRAFTER
 # ==============================================================================
 async def fetch_reddit_content(url):
     """Extracts Title and Text from Reddit Link using JSON trick"""
     try:
-        # Ensure URL ends with .json
         if not url.endswith(".json"):
             if url.endswith("/"): url = url[:-1]
             json_url = url + ".json"
@@ -202,6 +203,7 @@ async def fetch_reddit_content(url):
             if resp.status_code != 200: return None
             
             data = resp.json()
+            # Handle Reddit's JSON structure
             post_data = data[0]['data']['children'][0]['data']
             
             title = post_data.get('title', '')
@@ -213,11 +215,13 @@ async def fetch_reddit_content(url):
 
 async def manual_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # COMMAND: /draft <LINK> or /draft <TEXT>
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: 
+        await update.message.reply_text("Nope. Admins only. 💅")
+        return
     
     user_input = " ".join(context.args)
     if not user_input:
-        await update.message.reply_text("⚠️ usage: `/draft https://reddit.com/...` or `/draft I am lonely`")
+        await update.message.reply_text("⚠️ Paste a Reddit Link!\nUsage: `/draft https://reddit.com/...`")
         return
 
     await update.message.reply_text("💅 Reading link & drafting...")
@@ -231,14 +235,13 @@ async def manual_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Couldn't read link. Drafting based on URL text only.")
 
-    # Generate the Vibe Reply
     prompt = f"""
     TASK: Write a 'South Delhi Girl' style reply to this Reddit post.
     POST CONTENT:
     {content_to_reply}
     
-    STYLE: Empathetic but cool, use "Yaar", "Damn". Short (1-2 sentences).
-    Make it sound like a real person, not a bot.
+    STYLE: Empathetic but cool, use "Yaar", "Damn", "Literally".
+    LENGTH: 1-2 sentences max.
     """
     try:
         ai_res = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
@@ -247,7 +250,6 @@ async def manual_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ AI Error.")
 
 async def check_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
-    # Runs Weekly
     feeds = ["https://www.reddit.com/r/lonely/new/.rss", "https://www.reddit.com/r/MakeNewFriendsHere/new/.rss"]
     try:
         def get_feeds():
@@ -323,10 +325,9 @@ if __name__ == "__main__":
     
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("draft", manual_draft)) # Handles Links Now
+    app.add_handler(CommandHandler("draft", manual_draft))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VOICE, handle_message))
     
-    # Run Weekly
     app.job_queue.run_repeating(check_reddit_leads, interval=604800, first=10)
     
     print("✅ Zara is Live")
