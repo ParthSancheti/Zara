@@ -30,6 +30,7 @@ PICS_FOLDER = "photos"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_ID = "gemini-2.5-flash" 
+
 # ==============================================================================
 # 🛠️ LOGGING & HEARTBEAT
 # ==============================================================================
@@ -41,7 +42,7 @@ keep_alive_app = Flask(__name__)
 
 @keep_alive_app.route('/')
 def home():
-    return "💅 Zara is Online & Fixed."
+    return "💅 Zara is Online & Voice Fixed."
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -143,31 +144,45 @@ async def generate_reply(user_id, user_input, user_profile, media_file_path=None
         logger.error(f"Gemini Error: {e}")
         return "Wifi is acting up..."
 
+# ==============================================================================
+# 🗣️ FIXED VOICE HANDLER (Bulletproof)
+# ==============================================================================
 async def send_voice(update: Update, text: str):
+    filename = f"voice_{update.effective_user.id}_{int(time.time())}.mp3"
     try:
-        # --- THE FIX ---
-        # 1. Remove tags
-        text_without_tags = re.sub(r'\[.*?\]', '', text)
+        # 1. Remove Tags
+        clean_text = re.sub(r'\[.*?\]', '', text)
         
-        # 2. Remove special chars (keep standard punctuation and letters)
-        # This regex keeps letters (English & Hindi), numbers, spaces, and basic punctuation
-        clean_text = re.sub(r'[^\w\s,.]', '', text_without_tags).strip()
+        # 2. Cleaner that keeps Punctuation (Important for meaning)
+        # Keeps: letters, numbers, spaces, commas, dots, question marks, exclamations
+        clean_text = re.sub(r'[^\w\s.,!?\']', '', clean_text).strip()
 
-        # 3. SAFETY CHECK: If the text is too short or empty, STOP.
-        # This prevents the "No audio was received" error.
-        if not clean_text or len(clean_text) < 3:
-            logger.warning("⚠️ TTS Skipped: Text empty or too short.")
+        logger.info(f"🗣️ Speaking: '{clean_text}'")
+
+        # 3. Hard Stop if empty
+        if not clean_text or len(clean_text) < 2:
+            logger.warning("⚠️ TTS Skipped: Text empty.")
             return 
 
-        filename = f"voice_{update.effective_user.id}_{int(time.time())}.mp3"
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%", pitch="+5Hz")
-        await communicate.save(filename)
+        # 4. Try with "South Delhi" settings first
+        try:
+            communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%", pitch="+5Hz")
+            await communicate.save(filename)
+        except Exception as e:
+            logger.error(f"⚠️ Custom Pitch Failed: {e}. Retrying with Default...")
+            # 5. Fallback: If pitch fails, try default settings
+            communicate = edge_tts.Communicate(clean_text, VOICE)
+            await communicate.save(filename)
         
-        with open(filename, "rb") as audio:
-            await update.message.reply_voice(voice=audio)
-        os.remove(filename)
+        # 6. Send
+        if os.path.exists(filename):
+            with open(filename, "rb") as audio:
+                await update.message.reply_voice(voice=audio)
+            os.remove(filename)
+            
     except Exception as e:
-        logger.error(f"TTS Error: {e}")
+        logger.error(f"❌ TTS Critical Error: {e}")
+        if os.path.exists(filename): os.remove(filename)
 
 async def send_smart_pic(update: Update):
     if not os.path.exists(PICS_FOLDER): return
