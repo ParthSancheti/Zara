@@ -13,52 +13,48 @@ import aiosqlite
 import edge_tts
 import feedparser
 import PIL.Image
+import httpx  # NEW: For reading links
 from google import genai
 from telegram import Update, constants
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==============================================================================
-# 🔐 CONFIGURATION (Fill these in)
+# 🔐 CONFIGURATION
 # ==============================================================================
 TELEGRAM_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc"
-ADMIN_ID = 8318090503  # Your ID
+ADMIN_ID = 8318090503
 GEMINI_API_KEY = "AIzaSyBDmPfk4HOR6DWG8V3bCrC9w784N8j4xKQ"
 
 BOT_NAME = "Zara"
-# Best voice for Hinglish / South Delhi vibe
-VOICE = "en-IN-NeerjaNeural" 
+VOICE = "en-IN-KavyaNeural"
 PICS_FOLDER = "photos"
 
-# AI Configuration
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_ID = "gemini-2.5-flash" 
 
 # ==============================================================================
-# 🛠️ LOGGING & 24/7 HEARTBEAT
+# 🛠️ LOGGING & HEARTBEAT
 # ==============================================================================
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 sent_images_tracker = {}
 
-# --- FLASK SERVER (Keeps Render Awake) ---
 keep_alive_app = Flask(__name__)
 
 @keep_alive_app.route('/')
 def home():
-    return "✅ Zara Bot is Online & Running!"
+    return "💅 Zara is Online & Reading Links."
 
 def run_http_server():
-    # Render sets the PORT environment variable. We MUST use it.
     port = int(os.environ.get("PORT", 8080))
     keep_alive_app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run_http_server)
     t.start()
-# -----------------------------------------
 
 # ==============================================================================
-# 🗄️ DATABASE MANAGER
+# 🗄️ DATABASE
 # ==============================================================================
 class DatabaseManager:
     def __init__(self, db_name="zara.db"):
@@ -69,7 +65,6 @@ class DatabaseManager:
             await db.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, mood_score INTEGER DEFAULT 50, relationship_level INTEGER DEFAULT 0, last_interaction TIMESTAMP, messages_count INTEGER DEFAULT 0)''')
             await db.execute('''CREATE TABLE IF NOT EXISTS history (user_id INTEGER, role TEXT, content TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
             await db.commit()
-        print("✅ Database Initialized")
 
     async def get_user(self, user_id, username):
         async with aiosqlite.connect(self.db_name) as db:
@@ -102,27 +97,27 @@ class DatabaseManager:
 db = DatabaseManager()
 
 # ==============================================================================
-# 🧠 AI & VOICE LOGIC
+# 🧠 THE BRAIN
 # ==============================================================================
 async def generate_reply(user_id, user_input, user_profile, media_file_path=None, media_type=None):
     mood = user_profile['mood']
     history_text = await db.get_history_text(user_id)
     
     vibe = "Neutral"
-    if mood < 30: vibe = "Angry, Cold"
-    elif mood > 80: vibe = "Flirty, Clingy"
-    else: vibe = "Chill, Sarcastic, Gen-Z Delhi Girl"
+    if mood < 30: vibe = "Distant, 'Busy', Dry texter"
+    elif mood > 80: vibe = "Obsessed, 'Pick me' girl, Very affectionate"
+    else: vibe = "Aesthetic, South Delhi Gen-Z, Sarcastic but cute"
 
     prompt = f"""
     ACT AS: {BOT_NAME}, a 19-year-old girl from South Delhi.
-    TONE: Hinglish, uses "yaar", "lol", "damn".
-    MOOD: {vibe}.
+    PERSONA: Real girl energy. Uses "Yaar", "Literally", "Ugh", "Lol".
+    MOOD: {vibe} (Score: {mood}/100).
     
     RULES:
-    1. Keep it SHORT (under 20 words).
-    2. Be natural.
-    3. If you want to send a voice note, end text with [VOICE].
-    4. If you want to send a selfie, end text with [PIC].
+    1. If Mood < 30: Be dry. Say "k" or "busy".
+    2. If Mood > 80: Be sweet.
+    3. Keep it SHORT. Lowercase mostly.
+    4. Use [VOICE] at end for voice note, [PIC] for selfie.
     
     HISTORY:
     {history_text}
@@ -132,6 +127,9 @@ async def generate_reply(user_id, user_input, user_profile, media_file_path=None
     """
     
     try:
+        # Simulation Delay
+        await asyncio.sleep(random.uniform(1, 3))
+        
         if media_file_path:
             if media_type == "image":
                 img = PIL.Image.open(media_file_path)
@@ -145,18 +143,22 @@ async def generate_reply(user_id, user_input, user_profile, media_file_path=None
         return response.text.strip()
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
-        return "My net is slow yaar..."
+        return "Wifi is acting up..."
 
 async def send_voice(update: Update, text: str):
     try:
-        # Clean text for TTS
-        clean_text = re.sub(r'\[.*?\]', '', text)
-        clean_text = re.sub(r'[^\w\s,.]', '', clean_text)
-        if len(clean_text) < 2: return 
+        # 1. Clean Text STRICTLY to avoid TTS Errors
+        clean_text = re.sub(r'\[.*?\]', '', text) # Remove [Tags]
+        clean_text = re.sub(r'[^\w\s,.]', '', clean_text) # Remove emojis/symbols
+        clean_text = clean_text.strip()
+
+        # 2. Safety Check: If text is empty, DO NOT send voice
+        if not clean_text or len(clean_text) < 2: 
+            logger.warning("TTS Skipped: Text too short.")
+            return 
 
         filename = f"voice_{update.effective_user.id}_{int(time.time())}.mp3"
-        # South Delhi Tuning: Slightly faster, slightly higher pitch
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%", pitch="+2Hz")
+        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%", pitch="+5Hz")
         await communicate.save(filename)
         
         with open(filename, "rb") as audio:
@@ -169,14 +171,11 @@ async def send_smart_pic(update: Update):
     if not os.path.exists(PICS_FOLDER): return
     user_id = update.effective_user.id
     if user_id not in sent_images_tracker: sent_images_tracker[user_id] = []
-
     all_pics = [f for f in os.listdir(PICS_FOLDER) if f.lower().endswith(('.jpg', '.png'))]
     available_pics = [p for p in all_pics if p not in sent_images_tracker[user_id]]
-    
     if not available_pics:
-        sent_images_tracker[user_id] = [] # Reset if all sent
+        sent_images_tracker[user_id] = []
         available_pics = all_pics
-
     if available_pics:
         pic_name = random.choice(available_pics)
         sent_images_tracker[user_id].append(pic_name)
@@ -184,66 +183,107 @@ async def send_smart_pic(update: Update):
             await update.message.reply_photo(photo=p)
 
 # ==============================================================================
-# 🕵️ REDDIT LEAD FINDER (Manual Posting)
+# 🕵️ LINK READER & DRAFTER (The New Feature)
 # ==============================================================================
-async def check_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
-    # RSS Feeds for lonely/friendship subreddits
-    feeds = ["https://www.reddit.com/r/lonely/new/.rss", "https://www.reddit.com/r/MakeNewFriendsHere/new/.rss"]
+async def fetch_reddit_content(url):
+    """Extracts Title and Text from Reddit Link using JSON trick"""
+    try:
+        # Ensure URL ends with .json
+        if not url.endswith(".json"):
+            if url.endswith("/"): url = url[:-1]
+            json_url = url + ".json"
+        else:
+            json_url = url
+
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(json_url, headers=headers, follow_redirects=True)
+            if resp.status_code != 200: return None
+            
+            data = resp.json()
+            post_data = data[0]['data']['children'][0]['data']
+            
+            title = post_data.get('title', '')
+            selftext = post_data.get('selftext', '')
+            return f"TITLE: {title}\nCONTENT: {selftext}"
+    except Exception as e:
+        logger.error(f"Link Fetch Error: {e}")
+        return None
+
+async def manual_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # COMMAND: /draft <LINK> or /draft <TEXT>
+    if update.effective_user.id != ADMIN_ID: return
     
+    user_input = " ".join(context.args)
+    if not user_input:
+        await update.message.reply_text("⚠️ usage: `/draft https://reddit.com/...` or `/draft I am lonely`")
+        return
+
+    await update.message.reply_text("💅 Reading link & drafting...")
+    
+    # Check if input is a URL
+    content_to_reply = user_input
+    if "reddit.com" in user_input:
+        fetched_data = await fetch_reddit_content(user_input)
+        if fetched_data:
+            content_to_reply = fetched_data
+        else:
+            await update.message.reply_text("❌ Couldn't read link. Drafting based on URL text only.")
+
+    # Generate the Vibe Reply
+    prompt = f"""
+    TASK: Write a 'South Delhi Girl' style reply to this Reddit post.
+    POST CONTENT:
+    {content_to_reply}
+    
+    STYLE: Empathetic but cool, use "Yaar", "Damn". Short (1-2 sentences).
+    Make it sound like a real person, not a bot.
+    """
+    try:
+        ai_res = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
+        await update.message.reply_text(f"📝 **Draft Reply:**\n\n`{ai_res.text}`")
+    except:
+        await update.message.reply_text("❌ AI Error.")
+
+async def check_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
+    # Runs Weekly
+    feeds = ["https://www.reddit.com/r/lonely/new/.rss", "https://www.reddit.com/r/MakeNewFriendsHere/new/.rss"]
     try:
         def get_feeds():
             found = []
             for url in feeds:
                 f = feedparser.parse(url)
-                for e in f.entries[:2]: # Check top 2 new posts
-                    if any(k in e.title.lower() for k in ["lonely", "sad", "bored"]):
+                for e in f.entries[:3]: 
+                    if any(k in e.title.lower() for k in ["lonely", "sad", "girl"]):
                         found.append(e)
             return found
 
         posts = await asyncio.to_thread(get_feeds)
-        
         for post in posts:
-            # Generate a reply using AI
-            prompt = f"Write a short, viral, empathetic reply to this Reddit post: '{post.title}'. Don't sound like a bot."
+            prompt = f"Write a 'Real Girl' reply to: '{post.title}'."
             ai_res = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
             
-            msg = (
-                f"🕵️ **Lead Found!**\n\n"
-                f"📌 **{post.title}**\n"
-                f"🔗 {post.link}\n\n"
-                f"📝 **Draft Reply:**\n`{ai_res.text}`"
-            )
-            
-            # Send to Admin (You)
+            msg = f"💄 **Weekly Lead:** {post.title}\n🔗 {post.link}\n\n📝 **Reply:**\n`{ai_res.text}`"
             if ADMIN_ID:
                 await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
-                
     except Exception as e:
         logger.error(f"Reddit Error: {e}")
 
 # ==============================================================================
-# 🎮 MAIN EXECUTION
+# 🎮 HANDLERS
 # ==============================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hey! I'm awake. What's up? 😉")
+    await update.message.reply_text("Hii! Who is this? 👀")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text or update.message.caption or "[MEDIA]"
     
-    # Admin stats command
-    if user_text == "/stats" and user_id == ADMIN_ID:
-        await update.message.reply_text("📊 System is online and running.")
-        return
-
-    # Save user history
     user_profile = await db.get_user(user_id, update.effective_user.username)
     await db.add_history(user_id, "user", user_text)
-    
-    # Typing indicator
     await context.bot.send_chat_action(chat_id=user_id, action=constants.ChatAction.TYPING)
     
-    # Media Handling
     media_path, media_type = None, None
     try:
         if update.message.photo:
@@ -258,43 +298,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             media_type = "audio"
     except: pass
 
-    # Generate Reply
     reply_full = await generate_reply(user_id, user_text, user_profile, media_path, media_type)
     reply_clean = reply_full.replace("[VOICE]", "").replace("[PIC]", "").strip()
     
     if reply_clean: await update.message.reply_text(reply_clean)
 
-    # Send Media if tagged
     if "[VOICE]" in reply_full:
         await context.bot.send_chat_action(chat_id=user_id, action=constants.ChatAction.RECORD_VOICE)
+        await asyncio.sleep(1.5) 
         await send_voice(update, reply_clean)
     elif "[PIC]" in reply_full:
         await context.bot.send_chat_action(chat_id=user_id, action=constants.ChatAction.UPLOAD_PHOTO)
         await send_smart_pic(update)
 
-    # Cleanup
     if media_path and os.path.exists(media_path): os.remove(media_path)
     await db.update_user(user_id, msg_inc=1)
     await db.add_history(user_id, "assistant", reply_clean)
 
-# Hook to initialize DB on startup
 async def post_init(application: Application):
     await db.init_db()
 
 if __name__ == "__main__":
-    # 1. Start Flask (Keep Alive)
     keep_alive()
     
-    # 2. Start Telegram Bot
-    print("🚀 Bot Starting...")
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("draft", manual_draft)) # Handles Links Now
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VOICE, handle_message))
     
-    # Check for Reddit leads every 1 hour (3600 seconds)
-    app.job_queue.run_repeating(check_reddit_leads, interval=3600, first=10)
+    # Run Weekly
+    app.job_queue.run_repeating(check_reddit_leads, interval=604800, first=10)
     
-    print("✅ Bot is Live!")
+    print("✅ Zara is Live")
     app.run_polling()
-
