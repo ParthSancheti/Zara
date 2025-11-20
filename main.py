@@ -4,8 +4,6 @@ import os
 import random
 import re
 import time
-import json
-import pickle
 from datetime import datetime
 import aiosqlite
 import edge_tts
@@ -13,20 +11,34 @@ import feedparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import PIL.Image
-
-# NEW IMPORTS FOR BROWSER AUTOMATION
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from google import genai
 from flask import Flask
 from threading import Thread
 
-# --- KEEP ALIVE SERVER ---
+# ==============================================================================
+# 🔐 CONFIGURATION
+# ==============================================================================
+TELEGRAM_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc"
+ADMIN_ID = 8318090503  # REPLACE WITH YOUR REAL ID
+GEMINI_API_KEY = "AIzaSyBDmPfk4HOR6DWG8V3bCrC9w784N8j4xKQ"
+
+BOT_NAME = "Zara"
+# Using the South Delhi/Hinglish Voice
+VOICE = "en-IN-NeerjaNeural" 
+PICS_FOLDER = "photos"
+
+# AI MODEL SETUP
+client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_ID = "gemini-2.5-flash" 
+
+# ==============================================================================
+# 🛠️ LOGGING & KEEP ALIVE
+# ==============================================================================
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+sent_images_tracker = {}
+
+# --- FLASK SERVER TO KEEP BOT ALIVE ON RENDER ---
 keep_alive_app = Flask(__name__)
 
 @keep_alive_app.route('/')
@@ -39,166 +51,7 @@ def run_http_server():
 def keep_alive():
     t = Thread(target=run_http_server)
     t.start()
-
-# ==============================================================================
-# 🔐 CONFIGURATION
-# ==============================================================================
-TELEGRAM_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc"
-ADMIN_ID = 8318090503  # REPLACE WITH YOUR REAL ID
-GEMINI_API_KEY = "AIzaSyBDmPfk4HOR6DWG8V3bCrC9w784N8j4xKQ"
-
-BOT_NAME = "Zara"
-
-# CHANGED: en-IN-NeerjaNeural sounds much more "Real" for Hinglish/South Delhi girls
-# It handles English words inside Hindi sentences perfectly.
-VOICE = "en-IN-KavyaNeural" 
-
-PICS_FOLDER = "photos"
-COOKIES_FILE = "cookies.pkl"
-
-# AI MODEL SETUP
-client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = "gemini-2.5-flash" 
-
-# ==============================================================================
-# 🛠️ LOGGING & SETUP
-# ==============================================================================
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-sent_images_tracker = {}
-
-
-# ==============================================================================
-# 🌐 CORE 0: THE BROWSER ENGINE (AUTOMATION)
-# ==============================================================================
-class BrowserManager:
-    def __init__(self):
-        self.driver = None
-
-    def get_driver(self, headless=False):
-        options = webdriver.ChromeOptions()
-        if headless:
-            # This hides the browser completely
-            options.add_argument("--headless=new")
-        
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--start-maximized")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        
-        service = ChromeService(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        return driver
-
-    def save_cookies(self, driver, domain):
-        cookies = driver.get_cookies()
-        if os.path.exists(COOKIES_FILE):
-            try:
-                with open(COOKIES_FILE, 'rb') as f:
-                    all_cookies = pickle.load(f)
-            except:
-                all_cookies = {}
-        else:
-            all_cookies = {}
-        
-        all_cookies[domain] = cookies
-        with open(COOKIES_FILE, 'wb') as f:
-            pickle.dump(all_cookies, f)
-        print(f"✅ Cookies saved for {domain}")
-
-    def load_cookies(self, driver, domain):
-        if not os.path.exists(COOKIES_FILE): return False
-        try:
-            with open(COOKIES_FILE, 'rb') as f:
-                all_cookies = pickle.load(f)
-            
-            if domain in all_cookies:
-                for cookie in all_cookies[domain]:
-                    try:
-                        driver.add_cookie(cookie)
-                    except: pass
-                return True
-        except: pass
-        return False
-
-    def manual_login(self, url, domain):
-        """Opens a VISIBLE browser for you to login manually (Only used once)"""
-        driver = self.get_driver(headless=False) # False here so you can see it
-        driver.get(url)
-        print(f"⚠️ Please Log In to {domain} manually in the browser window...")
-        
-        while True:
-            try:
-                driver.title 
-                time.sleep(2)
-                if "reddit.com" in driver.current_url or "quora.com" in driver.current_url:
-                    self.save_cookies(driver, domain)
-            except:
-                break
-        print("✅ Browser closed. Session saved.")
-
-    def auto_post_reddit(self, post_url):
-        # CHANGED: Headless is NOW TRUE. It will run silently in background.
-        driver = self.get_driver(headless=True) 
-        try:
-            driver.get("https://www.reddit.com")
-            
-            # 1. Load Cookies
-            if not self.load_cookies(driver, "reddit"):
-                driver.quit()
-                return "❌ No cookies found. Run `/login_reddit` first."
-            
-            driver.refresh()
-            time.sleep(2)
-            driver.get(post_url)
-            time.sleep(5)
-
-            # 2. GENERATE REPLY (AI)
-            try:
-                post_title = driver.title
-            except: post_title = "Reddit Post"
-            
-            print(f"🧠 Generating reply for: {post_title}")
-            prompt = f"""
-            You are a helpful Reddit user.
-            CONTEXT: Thread title is "{post_title}".
-            TASK: Write a short, empathetic, human-like comment.
-            Do NOT act like a bot. Do NOT use hashtags. Keep it under 15 words.
-            REPLY:
-            """
-            response = client.models.generate_content(model=MODEL_ID, contents=prompt)
-            comment_text = response.text.strip().replace('"', '')
-            print(f"🤖 Generated: {comment_text}")
-
-            # 3. POSTING LOGIC
-            try:
-                # Wait for the rich text editor (contenteditable)
-                comment_box = WebDriverWait(driver, 15).until(
-                    EC.element_to_be_clickable((By.XPATH, "//div[@contenteditable='true']"))
-                )
-                comment_box.click()
-                time.sleep(1)
-                
-                comment_box.send_keys(comment_text)
-                time.sleep(2)
-                
-                # Submit via Ctrl+Enter
-                comment_box.send_keys(Keys.CONTROL, Keys.ENTER)
-                time.sleep(5)
-                
-                driver.quit()
-                return f"✅ Posted silently:\n'{comment_text}'"
-            
-            except Exception as e:
-                driver.quit()
-                return f"❌ Failed to find comment box: {e}"
-
-        except Exception as e:
-            driver.quit()
-            return f"❌ Browser Error: {e}"
-
-browser = BrowserManager()
+# ------------------------------------------------
 
 # ==============================================================================
 # 🗄️ DATABASE MANAGER
@@ -305,8 +158,8 @@ async def send_voice(update: Update, text: str):
 
         filename = f"voice_{update.effective_user.id}_{int(time.time())}.mp3"
         
-        # CHANGED: Using Neerja (Hinglish) with slight pitch adjustment for a younger vibe
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+0%", pitch="+2Hz")
+        # Neerja (Hinglish) Tuned
+        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%", pitch="+2Hz")
         
         await communicate.save(filename)
         
@@ -335,7 +188,7 @@ async def send_smart_pic(update: Update):
             await update.message.reply_photo(photo=p)
 
 # ==============================================================================
-# 🕵️ CORE 3: AUTOMATED GRIND (REDDIT)
+# 🕵️ CORE 3: MANUAL LEAD GRIND (NO CHROME)
 # ==============================================================================
 async def grind_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
     # RSS Scan
@@ -346,24 +199,19 @@ async def grind_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
             found = []
             for url in target_feeds:
                 f = feedparser.parse(url)
-                # Only look at the newest 2 posts
                 for e in f.entries[:2]:
                     if any(k in e.title.lower() for k in ["lonely", "sad", "talk"]): found.append(e)
             return found
 
         posts = await asyncio.to_thread(scan)
         for post in posts:
-            prompt = f"Write a viral reply to: '{post.title}'. Be empathetic."
+            prompt = f"Write a viral reply to: '{post.title}'. Be empathetic. Keep it human."
             ai_res = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
             
-            # Button calls /autopost logic
-            keyboard = [[InlineKeyboardButton("🤖 Auto-Post Now", callback_data=f"autopost|{post.link}")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            msg = f"🕵️ **New Lead Found!**\n\n**Title:** {post.title}\n**Link:** {post.link}\n\n📝 **AI Draft Reply:**\n`{ai_res.text}`\n\n_Click the link and paste the draft manually._"
             
-            msg = f"🕵️ **Weekly Lead Found:** {post.title}\n🔗 {post.link}\n\n📝 **Draft:**\n`{ai_res.text}`"
-            # Only send if ADMIN_ID is valid
             if ADMIN_ID != 1234567890:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown", reply_markup=reply_markup)
+                await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Grind Error: {e}")
 
@@ -373,53 +221,13 @@ async def grind_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Oye, finally you messaged! 🤨")
 
-async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return False
-    text = update.message.text
-
-    # LOGIN COMMANDS
-    if text == "/login_reddit":
-        await update.message.reply_text("🖥️ Opening Chrome VISIBLY... Log in manually, check 'Remember Me', then the window will close automatically after you log in.")
-        await asyncio.to_thread(browser.manual_login, "https://www.reddit.com/login", "reddit")
-        await update.message.reply_text("✅ Login Window Closed. Cookies saved for background use.")
-        return True
-        
-    if text == "/stats":
-        await update.message.reply_text("📊 **Stats**\n\nAdmin Mode Active.")
-        return True
-
-    # AUTOPOST COMMAND (MANUAL TRIGGER)
-    if text.startswith("/autopost"):
-        parts = text.split(" ")
-        if len(parts) < 2:
-            await update.message.reply_text("Usage: `/autopost [URL]`")
-            return True
-        
-        url = parts[1]
-        await update.message.reply_text("🤖 Ghost Mode: Analyzing post & Generating reply in background...")
-        
-        result = await asyncio.to_thread(browser.auto_post_reddit, url)
-        await update.message.reply_text(result)
-        return True
-
-    return False
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    
-    if data.startswith("autopost|"):
-        url = data.split("|")[1]
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🤖 Starting Auto-Post (Ghost Mode) for:\n{url}")
-        result = await asyncio.to_thread(browser.auto_post_reddit, url)
-        await context.bot.send_message(chat_id=ADMIN_ID, text=result)
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text or update.message.caption or "[MEDIA SENT]"
 
-    if await admin_commands(update, context): return
+    if user_text == "/stats" and user_id == ADMIN_ID:
+        await update.message.reply_text("📊 Bot is running smoothly!")
+        return
 
     user_profile = await db.get_user(user_id, update.effective_user.username)
     await db.add_history(user_id, "user", user_text)
@@ -462,7 +270,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.add_history(user_id, "assistant", reply_clean)
 
 if __name__ == "__main__":
-    keep_alive()  # Start the keep-alive server
+    keep_alive() # Starts the fake server to satisfy Render
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(db.init_db())
@@ -470,12 +279,10 @@ if __name__ == "__main__":
     app = Application.builder().token(TELEGRAM_TOKEN).read_timeout(30).write_timeout(30).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VOICE, handle_message))
-    app.add_handler(CallbackQueryHandler(button_handler))
     
     if ADMIN_ID != 1234567890:
-        # CHANGED: Interval set to 604800 seconds (1 week)
-        # It runs 10 seconds after startup, then every week.
-        app.job_queue.run_repeating(grind_reddit_leads, interval=604800, first=10)
+        # Runs every 30 minutes (1800 seconds) to check for new posts
+        app.job_queue.run_repeating(grind_reddit_leads, interval=1800, first=10)
 
-    print(f"🔥 {BOT_NAME} is Online! (Ghost Mode Active - Weekly Schedule)")
+    print(f"🔥 {BOT_NAME} is Online! (Lite Version - No Chrome)")
     app.run_polling()
