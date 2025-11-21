@@ -33,9 +33,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ==============================================================================
 # 🔐 CONFIGURATION
 # ==============================================================================
-TELEGRAM_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc"
-ADMIN_ID = 8318090503  # Replace with your real ID
-GEMINI_API_KEY = "AIzaSyA140hM8UTpMjJddSq3Qhv9k231nMrGkuk"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) # Default to 0 if not found
 
 BOT_NAME = "Zara"
 PICS_FOLDER = "photos"
@@ -524,4 +524,5 @@ if __name__ == "__main__":
 
     print(f"🔥 {BOT_NAME} is Online! (Full Version)")
     app.run_polling()
+
 
