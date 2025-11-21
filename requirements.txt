@@ -1,3 +1,4 @@
+python-dotenv
 python-telegram-bot[job-queue]
 selenium
 webdriver-manager
@@ -8,3 +9,4 @@ aiosqlite
 Pillow
 flask
 gunicorn
+
