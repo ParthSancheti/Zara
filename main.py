@@ -35,7 +35,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ==============================================================================
 TELEGRAM_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc"
 ADMIN_ID = 8318090503  # Replace with your real ID
-GEMINI_API_KEY = "AIzaSyBDmPfk4HOR6DWG8V3bCrC9w784N8j4xKQ"
+GEMINI_API_KEY = "AIzaSyA140hM8UTpMjJddSq3Qhv9k231nMrGkuk"
 
 BOT_NAME = "Zara"
 PICS_FOLDER = "photos"
@@ -524,3 +524,4 @@ if __name__ == "__main__":
 
     print(f"🔥 {BOT_NAME} is Online! (Full Version)")
     app.run_polling()
+
