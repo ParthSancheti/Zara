@@ -322,7 +322,7 @@ def main():
     print(f"{Fore.WHITE}Status: {Fore.GREEN}Online")
     print(f"{Fore.WHITE}Memory: {Fore.GREEN}Loaded")
     print(f"{Fore.WHITE}Automation: {Fore.GREEN}Active")
-    print(f"{Fore.GRAY}(Type 'exit' to quit)")
+    print(f"{Fore.LIGHTBLACK_EX}(Type 'exit' to quit)")
     print("")
 
     # 4. Chat Loop
@@ -365,3 +365,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
