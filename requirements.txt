@@ -1,7 +1,7 @@
 python-telegram-bot
 selenium
 webdriver-manager
-google-genai
+google-generativeai
 edge-tts
 feedparser
 aiosqlite

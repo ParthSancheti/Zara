@@ -418,4 +418,3 @@ if __name__ == "__main__":
 
     print(f"🔥 {BOT_NAME} Reborn is Online!")
     app.run_polling()
-
