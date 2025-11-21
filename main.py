@@ -34,10 +34,18 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ==============================================================================
 # 🔐 CONFIGURATION
 # ==============================================================================
+load_dotenv() # This loads .env locally, but does nothing on Render (which is fine)
+
+# These read from Render's Environment Settings
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) # Default to 0 if not found
 
+# This prevents the exact error you just saw
+if not GEMINI_API_KEY:
+    print("❌ CRITICAL ERROR: GEMINI_API_KEY is missing in Environment Variables!")
+    exit(1)
+
+client = genai.Client(api_key=GEMINI_API_KEY)
 BOT_NAME = "Zara"
 PICS_FOLDER = "photos"
 COOKIES_FILE = "cookies.pkl"
@@ -525,6 +533,7 @@ if __name__ == "__main__":
 
     print(f"🔥 {BOT_NAME} is Online! (Full Version)")
     app.run_polling()
+
 
 
 
