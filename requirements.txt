@@ -2,7 +2,7 @@ python-telegram-bot[job-queue]
 selenium
 webdriver-manager
 google-genai
-edge-tts
+gTTS
 feedparser
 aiosqlite
 Pillow
