@@ -4,6 +4,7 @@ import os
 import random
 import re
 import time
+from dotenv import load_dotenv # Import this
 import json
 import pickle
 from datetime import datetime, timedelta
@@ -524,5 +525,6 @@ if __name__ == "__main__":
 
     print(f"🔥 {BOT_NAME} is Online! (Full Version)")
     app.run_polling()
+
 
 
