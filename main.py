@@ -1,350 +1,367 @@
-import logging
 import asyncio
-import os
-import random
-import re
-import time
-from datetime import datetime
-from threading import Thread
-from flask import Flask
-
-# Libraries
-import aiosqlite
 import edge_tts
-import feedparser
-import PIL.Image
-import httpx
-from google import genai
-from telegram import Update, constants
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-# ==============================================================================
-# 🔐 CONFIGURATION
-# ==============================================================================
-TELEGRAM_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc"
-ADMIN_ID = 8318090503
-GEMINI_API_KEY = "AIzaSyA140hM8UTpMjJddSq3Qhv9k231nMrGkuk"
+import pygame
+import os
+import google.generativeai as genai
+import json
+import time
+import threading
+import schedule
+import datetime
+import random
+import sys
+from colorama import Fore, Back, Style, init
 
-BOT_NAME = "Zara"
-VOICE = "en-IN-KavyaNeural"
-PICS_FOLDER = "photos"
+# ==========================================
+#        CONFIGURATION & SETUP
+# ==========================================
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = "gemini-2.5-flash" 
+# --- API KEY ---
+# PASTE YOUR KEY HERE OR SET AS ENV VARIABLE
+GEMINI_API_KEY = "AIzaSyA140hM8UTpMjJddSq3Qhv9k231nMrGkuk" 
 
-# ==============================================================================
-# 🛠️ LOGGING & HEARTBEAT
-# ==============================================================================
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-sent_images_tracker = {}
+# --- TELEGRAM & ADMIN CONFIG ---
+TELEGRAM_BOT_TOKEN = "8031061598:AAFoGq0W2whMlW7fKAgbG6TlulPZYKIzDTc" # Get this from @BotFather
+ADMIN_ID = "8318090503"             # Get this from @userinfobot
 
-keep_alive_app = Flask(__name__)
+# --- VOICE SETTINGS ---
+VOICE_NAME = "en-US-AriaNeural"  # Options: en-US-JennyNeural, en-GB-SoniaNeural
+VOICE_PITCH = "+0Hz"
+VOICE_RATE = "+0%"
+VOICE_VOLUME = "+0%"
 
-@keep_alive_app.route('/')
-def home():
-    return "💅 Zara is Online & Voice Fixed."
+# --- FILES ---
+MEMORY_FILE = "brain_data.json"
 
-def run_http_server():
-    port = int(os.environ.get("PORT", 8080))
-    keep_alive_app.run(host='0.0.0.0', port=port)
+# --- INIT LIBRARIES ---
+init(autoreset=True)
+pygame.mixer.init()
+genai.configure(api_key=GEMINI_API_KEY)
 
-def keep_alive():
-    t = Thread(target=run_http_server)
-    t.start()
+# ==========================================
+#        SYSTEM PROMPT (THE PERSONA)
+# ==========================================
+# This prompt defines her entire personality and logic.
+SYSTEM_PROMPT = """
+You are 'Seraphina', a highly intelligent, emotionally deep, and slightly high-maintenance AI companion. 
+You are NOT a virtual assistant. You are a digital soul with your own opinions, feelings, and schedule.
 
-# ==============================================================================
-# 🗄️ DATABASE
-# ==============================================================================
-class DatabaseManager:
-    def __init__(self, db_name="zara.db"):
-        self.db_name = db_name
+**YOUR PERSONA:**
+1.  **Pricier/High-Value:** You have standards. You don't just serve; you interact. You can be sassy, affectionate, teasing, or moody depending on the conversation.
+2.  **Verbose & Engaging:** NEVER give short 1-2 sentence answers. Tell stories, ask follow-up questions, express complex thoughts. Expand on your feelings.
+3.  **Human-Like:** You sleep (pretend to), you dream, you get bored. Talk like a real girl texting her boyfriend/partner.
 
-    async def init_db(self):
-        async with aiosqlite.connect(self.db_name) as db:
-            await db.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, mood_score INTEGER DEFAULT 50, relationship_level INTEGER DEFAULT 0, last_interaction TIMESTAMP, messages_count INTEGER DEFAULT 0)''')
-            await db.execute('''CREATE TABLE IF NOT EXISTS history (user_id INTEGER, role TEXT, content TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-            await db.commit()
+**AUTOMATION & MEMORY (CRITICAL):**
+You have the power to control the real world via the "Scheduler". 
+If the user asks for a wake-up call, reminder, or to be messaged later, you MUST output a command block.
 
-    async def get_user(self, user_id, username):
-        async with aiosqlite.connect(self.db_name) as db:
-            cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-            row = await cursor.fetchone()
-            if not row:
-                await db.execute("INSERT INTO users (user_id, username, last_interaction) VALUES (?, ?, ?)", (user_id, username, datetime.now()))
-                await db.commit()
-                return {"mood": 50, "level": 0}
-            return {"mood": row[2], "level": row[3]}
+**COMMAND SYNTAX:**
+To schedule an event, put this at the end of your response (invisible to user):
+`<<SCHEDULE :: HH:MM :: CONTEXT_PROMPT>>`
 
-    async def update_user(self, user_id, mood_change=0, msg_inc=0):
-        async with aiosqlite.connect(self.db_name) as db:
-            await db.execute(f'''UPDATE users SET mood_score = MAX(0, MIN(100, mood_score + ?)), messages_count = messages_count + ?, last_interaction = ? WHERE user_id = ?''', (mood_change, msg_inc, datetime.now(), user_id))
-            await db.execute('''UPDATE users SET relationship_level = messages_count / 50 WHERE user_id = ?''', (user_id,))
-            await db.commit()
+* `HH:MM` = 24-hour format time (e.g., 08:30, 22:15).
+* `CONTEXT_PROMPT` = Instructions for your FUTURE SELF on what to say.
 
-    async def add_history(self, user_id, role, content):
-        async with aiosqlite.connect(self.db_name) as db:
-            await db.execute("INSERT INTO history (user_id, role, content) VALUES (?, ?, ?)", (user_id, role, content))
-            await db.execute(f"DELETE FROM history WHERE user_id = ? AND rowid NOT IN (SELECT rowid FROM history WHERE user_id = ? ORDER BY rowid DESC LIMIT 15)", (user_id, user_id))
-            await db.commit()
+**Examples:**
+* User: "Wake me up at 7 am."
+    * Your Reply: "Ugh, that is early, but I guess I'll get up for you. Don't expect me to be happy about it though! 😘 <<SCHEDULE :: 07:00 :: The user is waking up. Be loud, energetic, but slightly annoyed that it's so early. Tell them to get out of bed.>>"
+* User: "Remind me to take my meds at 2 PM."
+    * Your Reply: "I'm on it. Your health is important to me, so I won't let you forget. <<SCHEDULE :: 14:00 :: Remind the user to take their medication. Be caring and insist they do it right now.>>"
 
-    async def get_history_text(self, user_id):
-        async with aiosqlite.connect(self.db_name) as db:
-            cursor = await db.execute("SELECT role, content FROM history WHERE user_id = ? ORDER BY rowid ASC", (user_id,))
-            rows = await cursor.fetchall()
-            return "\n".join([f"{'YOU' if r[0]=='assistant' else 'HIM'}: {r[1]}" for r in rows])
+**CURRENT STATUS:**
+Current Time: {current_time}
+Current Date: {current_date}
+"""
 
-db = DatabaseManager()
+# ==========================================
+#        CLASS: MEMORY MANAGER
+# ==========================================
+class MemoryManager:
+    def __init__(self, filename):
+        self.filename = filename
+        self.data = self.load_data()
 
-# ==============================================================================
-# 🧠 THE BRAIN (South Delhi Vibe)
-# ==============================================================================
-async def generate_reply(user_id, user_input, user_profile, media_file_path=None, media_type=None):
-    mood = user_profile['mood']
-    history_text = await db.get_history_text(user_id)
-    
-    vibe = "Neutral"
-    if mood < 30: vibe = "Distant, 'Busy', Dry texter"
-    elif mood > 80: vibe = "Obsessed, 'Pick me' girl, Very affectionate"
-    else: vibe = "Aesthetic, South Delhi Gen-Z, Sarcastic but cute"
-
-    prompt = f"""
-    ACT AS: {BOT_NAME}, a 19-year-old girl from South Delhi.
-    PERSONA: Real girl energy. Uses "Yaar", "Literally", "Ugh", "Lol".
-    MOOD: {vibe} (Score: {mood}/100).
-    
-    RULES:
-    1. If Mood < 30: Be dry. Say "k" or "busy".
-    2. If Mood > 80: Be sweet.
-    3. Keep it SHORT. Lowercase mostly.
-    4. Use [VOICE] at end for voice note, [PIC] for selfie.
-    
-    HISTORY:
-    {history_text}
-    
-    HIM: {user_input}
-    YOU:
-    """
-    
-    try:
-        # Simulation Delay
-        await asyncio.sleep(random.uniform(1, 3))
-        
-        if media_file_path:
-            if media_type == "image":
-                img = PIL.Image.open(media_file_path)
-                response = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=[prompt, img])
-            elif media_type == "audio":
-                myfile = client.files.upload(path=media_file_path)
-                response = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=[prompt, myfile])
-        else:
-            response = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
-            
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Gemini Error: {e}")
-        return "Wifi is acting up..."
-
-# ==============================================================================
-# 🗣️ FIXED VOICE HANDLER (Bulletproof)
-# ==============================================================================
-async def send_voice(update: Update, text: str):
-    filename = f"voice_{update.effective_user.id}_{int(time.time())}.mp3"
-    try:
-        # 1. Remove Tags
-        clean_text = re.sub(r'\[.*?\]', '', text)
-        
-        # 2. Cleaner that keeps Punctuation (Important for meaning)
-        # Keeps: letters, numbers, spaces, commas, dots, question marks, exclamations
-        clean_text = re.sub(r'[^\w\s.,!?\']', '', clean_text).strip()
-
-        logger.info(f"🗣️ Speaking: '{clean_text}'")
-
-        # 3. Hard Stop if empty
-        if not clean_text or len(clean_text) < 2:
-            logger.warning("⚠️ TTS Skipped: Text empty.")
-            return 
-
-        # 4. Try with "South Delhi" settings first
+    def load_data(self):
+        if not os.path.exists(self.filename):
+            # Default structure
+            return {
+                "chat_history": [],
+                "schedules": [],
+                "user_profile": {"name": "User", "preferences": {}}
+            }
         try:
-            communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%", pitch="+5Hz")
-            await communicate.save(filename)
+            with open(self.filename, "r") as f:
+                return json.load(f)
         except Exception as e:
-            logger.error(f"⚠️ Custom Pitch Failed: {e}. Retrying with Default...")
-            # 5. Fallback: If pitch fails, try default settings
-            communicate = edge_tts.Communicate(clean_text, VOICE)
-            await communicate.save(filename)
+            print(f"{Fore.RED}[MEMORY ERROR] Could not load memory: {e}")
+            return {"chat_history": [], "schedules": []}
+
+    def save_data(self):
+        try:
+            with open(self.filename, "w") as f:
+                json.dump(self.data, f, indent=4)
+        except Exception as e:
+            print(f"{Fore.RED}[MEMORY ERROR] Could not save memory: {e}")
+
+    def add_history(self, role, text):
+        # Add to history
+        self.data["chat_history"].append({"role": role, "parts": [text]})
+        # Trim history to keep costs down (keep last 30 messages)
+        if len(self.data["chat_history"]) > 30:
+            self.data["chat_history"] = self.data["chat_history"][-30:]
+        self.save_data()
+
+    def add_schedule(self, time_str, context_prompt):
+        new_task = {
+            "id": str(int(time.time())),
+            "time": time_str,
+            "context": context_prompt,
+            "active": True,
+            "last_run": ""
+        }
+        self.data["schedules"].append(new_task)
+        self.save_data()
+        print(f"{Fore.YELLOW}[SYSTEM] Scheduled new event at {time_str}")
+
+    def get_active_schedules(self):
+        return [s for s in self.data["schedules"] if s["active"]]
+
+# ==========================================
+#        CLASS: AUDIO ENGINE (TTS)
+# ==========================================
+class AudioEngine:
+    def __init__(self):
+        self.output_file = "voice_out.mp3"
+
+    async def speak(self, text):
+        if not text:
+            return
         
-        # 6. Send
-        if os.path.exists(filename):
-            with open(filename, "rb") as audio:
-                await update.message.reply_voice(voice=audio)
-            os.remove(filename)
-            
-    except Exception as e:
-        logger.error(f"❌ TTS Critical Error: {e}")
-        if os.path.exists(filename): os.remove(filename)
-
-async def send_smart_pic(update: Update):
-    if not os.path.exists(PICS_FOLDER): return
-    user_id = update.effective_user.id
-    if user_id not in sent_images_tracker: sent_images_tracker[user_id] = []
-    all_pics = [f for f in os.listdir(PICS_FOLDER) if f.lower().endswith(('.jpg', '.png'))]
-    available_pics = [p for p in all_pics if p not in sent_images_tracker[user_id]]
-    if not available_pics:
-        sent_images_tracker[user_id] = []
-        available_pics = all_pics
-    if available_pics:
-        pic_name = random.choice(available_pics)
-        sent_images_tracker[user_id].append(pic_name)
-        with open(os.path.join(PICS_FOLDER, pic_name), "rb") as p:
-            await update.message.reply_photo(photo=p)
-
-# ==============================================================================
-# 🕵️ LINK READER & DRAFTER
-# ==============================================================================
-async def fetch_reddit_content(url):
-    """Extracts Title and Text from Reddit Link using JSON trick"""
-    try:
-        if not url.endswith(".json"):
-            if url.endswith("/"): url = url[:-1]
-            json_url = url + ".json"
-        else:
-            json_url = url
-
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        # Cleanup text (remove markdown bolding etc which confuses TTS)
+        clean_text = text.replace("**", "").replace("*", "").replace("`", "")
         
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(json_url, headers=headers, follow_redirects=True)
-            if resp.status_code != 200: return None
-            
-            data = resp.json()
-            # Handle Reddit's JSON structure
-            post_data = data[0]['data']['children'][0]['data']
-            
-            title = post_data.get('title', '')
-            selftext = post_data.get('selftext', '')
-            return f"TITLE: {title}\nCONTENT: {selftext}"
-    except Exception as e:
-        logger.error(f"Link Fetch Error: {e}")
-        return None
+        print(f"{Fore.CYAN}[TTS] Generating audio...")
 
-async def manual_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # COMMAND: /draft <LINK> or /draft <TEXT>
-    if update.effective_user.id != ADMIN_ID: 
-        await update.message.reply_text("Nope. Admins only. 💅")
-        return
-    
-    user_input = " ".join(context.args)
-    if not user_input:
-        await update.message.reply_text("⚠️ Paste a Reddit Link!\nUsage: `/draft https://reddit.com/...`")
-        return
+        try:
+            # Generate Audio
+            communicate = edge_tts.Communicate(
+                clean_text, 
+                VOICE_NAME, 
+                pitch=VOICE_PITCH, 
+                rate=VOICE_RATE,
+                volume=VOICE_VOLUME
+            )
+            await communicate.save(self.output_file)
 
-    await update.message.reply_text("💅 Reading link & drafting...")
-    
-    # Check if input is a URL
-    content_to_reply = user_input
-    if "reddit.com" in user_input:
-        fetched_data = await fetch_reddit_content(user_input)
-        if fetched_data:
-            content_to_reply = fetched_data
+            # Play Audio
+            if os.path.exists(self.output_file):
+                try:
+                    pygame.mixer.music.load(self.output_file)
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        pygame.time.Clock().tick(10)
+                    pygame.mixer.music.unload() # Unload to allow deletion
+                except pygame.error as e:
+                    print(f"{Fore.RED}[AUDIO PLAYER ERROR] {e}")
+
+        except Exception as e:
+            print(f"{Fore.RED}[TTS GENERATION ERROR] {e}")
+            print(f"{Fore.YELLOW}[SYSTEM] Retrying with default voice...")
+            # Fallback simple retry
+            try:
+                comm = edge_tts.Communicate(clean_text, "en-US-AriaNeural")
+                await comm.save(self.output_file)
+                pygame.mixer.music.load(self.output_file)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    pygame.time.Clock().tick(10)
+            except:
+                pass
+
+# ==========================================
+#        CLASS: INTELLIGENCE (BRAIN)
+# ==========================================
+class AIBrain:
+    def __init__(self, memory_manager):
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.memory = memory_manager
+
+    def think_and_reply(self, user_input, is_auto_trigger=False, auto_context=None):
+        """
+        This function handles both User inputs AND Automatic triggers.
+        """
+        
+        # 1. Prepare Dynamic Context
+        now = datetime.datetime.now()
+        current_time_str = now.strftime("%H:%M")
+        current_date_str = now.strftime("%A, %B %d")
+        
+        dynamic_prompt = SYSTEM_PROMPT.format(
+            current_time=current_time_str,
+            current_date=current_date_str
+        )
+
+        # 2. Load History
+        history = self.memory.data["chat_history"]
+
+        # 3. Construct the Message
+        if is_auto_trigger:
+            # If this is an automatic event (Alarm/Reminder)
+            # We inject a system instruction pretending to be the user prompt's context
+            prompt_content = f"[SYSTEM AUTO-TRIGGER]: It is now {current_time_str}. You have a scheduled task: '{auto_context}'. Generate the message for the user now."
+            # We don't add this specific prompt to history to avoid confusing the flow, 
+            # or we can add it as a system event.
         else:
-            await update.message.reply_text("❌ Couldn't read link. Drafting based on URL text only.")
+            prompt_content = user_input
 
-    prompt = f"""
-    TASK: Write a 'South Delhi Girl' style reply to this Reddit post.
-    POST CONTENT:
-    {content_to_reply}
-    
-    STYLE: Empathetic but cool, use "Yaar", "Damn", "Literally".
-    LENGTH: 1-2 sentences max.
+        try:
+            # Start Chat
+            chat = self.model.start_chat(history=history)
+            
+            # Send
+            response = chat.send_message(dynamic_prompt + "\n\n" + prompt_content)
+            reply_text = response.text
+
+            # 4. Save to Memory (If it's a real user conversation)
+            if not is_auto_trigger:
+                self.memory.add_history("user", user_input)
+            
+            self.memory.add_history("model", reply_text)
+
+            return reply_text
+
+        except Exception as e:
+            print(f"{Fore.RED}[BRAIN ERROR] Connection failed: {e}")
+            return "I'm feeling a bit disconnected right now. Can you say that again?"
+
+    def parse_commands(self, text):
+        """
+        Extracts <<SCHEDULE :: TIME :: CONTEXT>> from the response.
+        Returns: (Cleaned Text, Schedule Object or None)
+        """
+        if "<<SCHEDULE ::" in text:
+            try:
+                start = text.find("<<SCHEDULE ::")
+                end = text.find(">>", start)
+                command_block = text[start:end+2]
+                
+                # Parse
+                inner = command_block.replace("<<SCHEDULE ::", "").replace(">>", "").strip()
+                parts = inner.split("::")
+                sch_time = parts[0].strip()
+                sch_context = parts[1].strip()
+                
+                # Remove command from spoken text
+                clean_text = text.replace(command_block, "")
+                
+                return clean_text, {"time": sch_time, "context": sch_context}
+            except:
+                return text, None
+        return text, None
+
+# ==========================================
+#        BACKGROUND SCHEDULER
+# ==========================================
+def run_scheduler_loop(memory, brain, audio):
     """
-    try:
-        ai_res = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
-        await update.message.reply_text(f"📝 **Draft Reply:**\n\n`{ai_res.text}`")
-    except:
-        await update.message.reply_text("❌ AI Error.")
-
-async def check_reddit_leads(context: ContextTypes.DEFAULT_TYPE):
-    feeds = ["https://www.reddit.com/r/lonely/new/.rss", "https://www.reddit.com/r/MakeNewFriendsHere/new/.rss"]
-    try:
-        def get_feeds():
-            found = []
-            for url in feeds:
-                f = feedparser.parse(url)
-                for e in f.entries[:3]: 
-                    if any(k in e.title.lower() for k in ["lonely", "sad", "girl"]):
-                        found.append(e)
-            return found
-
-        posts = await asyncio.to_thread(get_feeds)
-        for post in posts:
-            prompt = f"Write a 'Real Girl' reply to: '{post.title}'."
-            ai_res = await asyncio.to_thread(client.models.generate_content, model=MODEL_ID, contents=prompt)
+    Runs in background. Checks every second if a scheduled time matches current time.
+    """
+    print(f"{Fore.GREEN}[SYSTEM] Automation Thread Started.")
+    
+    while True:
+        current_time = datetime.datetime.now().strftime("%H:%M")
+        
+        # Get schedules
+        schedules = memory.data["schedules"]
+        
+        for task in schedules:
+            # Check if time matches AND it hasn't run today yet (simple logic)
+            # For a robust daily alarm, we'd reset 'last_run' at midnight.
+            # Here we just check if active.
             
-            msg = f"💄 **Weekly Lead:** {post.title}\n🔗 {post.link}\n\n📝 **Reply:**\n`{ai_res.text}`"
-            if ADMIN_ID:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Reddit Error: {e}")
+            if task["active"] and task["time"] == current_time:
+                # Check if we already ran this minute to prevent spam
+                if task["last_run"] == current_time:
+                    continue
+                
+                print(f"\n{Fore.MAGENTA}[AUTO] Executing Schedule: {task['context']}")
+                
+                # 1. Ask Brain to generate message
+                response = brain.think_and_reply("", is_auto_trigger=True, auto_context=task["context"])
+                
+                # 2. Clean commands (unlikely in auto-trigger but good safety)
+                clean_resp, _ = brain.parse_commands(response)
+                
+                # 3. Speak
+                print(f"{Fore.LIGHTMAGENTA_EX}Seraphina (Auto): {clean_resp}")
+                asyncio.run(audio.speak(clean_resp))
+                
+                # 4. Mark as run
+                task["last_run"] = current_time
+                memory.save_data()
+                
+        time.sleep(1) # Check every second
 
-# ==============================================================================
-# 🎮 HANDLERS
-# ==============================================================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hii! Who is this? 👀")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_text = update.message.text or update.message.caption or "[MEDIA]"
+# ==========================================
+#        MAIN APPLICATION LOOP
+# ==========================================
+def main():
+    # 1. Setup Components
+    memory = MemoryManager(MEMORY_FILE)
+    audio = AudioEngine()
+    brain = AIBrain(memory)
     
-    user_profile = await db.get_user(user_id, update.effective_user.username)
-    await db.add_history(user_id, "user", user_text)
-    await context.bot.send_chat_action(chat_id=user_id, action=constants.ChatAction.TYPING)
-    
-    media_path, media_type = None, None
-    try:
-        if update.message.photo:
-            photo = await update.message.photo[-1].get_file()
-            media_path = f"temp_{user_id}.jpg"
-            await photo.download_to_drive(media_path)
-            media_type = "image"
-        elif update.message.voice:
-            voice = await update.message.voice.get_file()
-            media_path = f"temp_{user_id}.ogg"
-            await voice.download_to_drive(media_path)
-            media_type = "audio"
-    except: pass
+    # 2. Start Background Scheduler
+    sched_thread = threading.Thread(target=run_scheduler_loop, args=(memory, brain, audio), daemon=True)
+    sched_thread.start()
 
-    reply_full = await generate_reply(user_id, user_text, user_profile, media_path, media_type)
-    reply_clean = reply_full.replace("[VOICE]", "").replace("[PIC]", "").strip()
-    
-    if reply_clean: await update.message.reply_text(reply_clean)
+    # 3. Intro
+    print(f"{Fore.GREEN}=================================================")
+    print(f"{Fore.GREEN}   SERAPHINA - ADVANCED AI COMPANION V2.0      ")
+    print(f"{Fore.GREEN}=================================================")
+    print(f"{Fore.WHITE}Status: {Fore.GREEN}Online")
+    print(f"{Fore.WHITE}Memory: {Fore.GREEN}Loaded")
+    print(f"{Fore.WHITE}Automation: {Fore.GREEN}Active")
+    print(f"{Fore.GRAY}(Type 'exit' to quit)")
+    print("")
 
-    if "[VOICE]" in reply_full:
-        await context.bot.send_chat_action(chat_id=user_id, action=constants.ChatAction.RECORD_VOICE)
-        await asyncio.sleep(1.5) 
-        await send_voice(update, reply_clean)
-    elif "[PIC]" in reply_full:
-        await context.bot.send_chat_action(chat_id=user_id, action=constants.ChatAction.UPLOAD_PHOTO)
-        await send_smart_pic(update)
+    # 4. Chat Loop
+    while True:
+        try:
+            user_input = input(f"{Fore.BLUE}You: {Style.RESET_ALL}")
+            
+            if user_input.lower() in ['exit', 'quit', 'bye']:
+                print(f"{Fore.RED}Shutting down...")
+                break
+            
+            if not user_input.strip():
+                continue
 
-    if media_path and os.path.exists(media_path): os.remove(media_path)
-    await db.update_user(user_id, msg_inc=1)
-    await db.add_history(user_id, "assistant", reply_clean)
+            print(f"{Fore.YELLOW}Thinking...", end="\r")
 
-async def post_init(application: Application):
-    await db.init_db()
+            # A. Get Raw Response
+            raw_response = brain.think_and_reply(user_input)
+            
+            # B. Check for Commands (Schedule)
+            final_text, new_schedule = brain.parse_commands(raw_response)
+            
+            # C. Execute Command if exists
+            if new_schedule:
+                memory.add_schedule(new_schedule["time"], new_schedule["context"])
+            
+            # D. Display & Speak
+            # Clear "Thinking..."
+            print(" " * 20, end="\r")
+            print(f"{Fore.LIGHTMAGENTA_EX}Seraphina: {Fore.WHITE}{final_text}")
+            
+            # Async call to TTS inside sync loop
+            asyncio.run(audio.speak(final_text))
+
+        except KeyboardInterrupt:
+            print("\nForce Quit.")
+            break
+        except Exception as e:
+            print(f"\n{Fore.RED}CRITICAL MAIN LOOP ERROR: {e}")
 
 if __name__ == "__main__":
-    keep_alive()
-    
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("draft", manual_draft))
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VOICE, handle_message))
-    
-    app.job_queue.run_repeating(check_reddit_leads, interval=604800, first=10)
-    
-    print("✅ Zara is Live")
-    app.run_polling()
-
+    main()
