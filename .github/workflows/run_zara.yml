@@ -1,0 +1,33 @@
+name: Run Zara Script
+
+on:
+  workflow_dispatch: # This adds a "Run" button so you can test it manually
+  # push:            # Remove the '#' at the start of this line if you want it to run when you push code
+
+jobs:
+  run-zara:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Get your code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Install Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # 3. Install your libraries
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # 4. Run the bot using the secrets you added
+      - name: Run main.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+        run: python main.py
